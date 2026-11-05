@@ -180,6 +180,19 @@ main { padding-block: 22px 40px; display: grid; gap: 32px; }
 .badge.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #fff; margin-right: 6px; vertical-align: 1px; animation: pulse 1.4s infinite; }
 @keyframes pulse { 50% { opacity: .25; } }
 .vage { position: absolute; right: 10px; bottom: 10px; z-index: 2; }
+.tapplay {
+  position: absolute; inset: 0; z-index: 3; margin: auto; width: max-content; height: max-content;
+  display: inline-flex; align-items: center; gap: 10px;
+  background: var(--live); color: #fff; border: 0; border-radius: 999px;
+  padding: 14px 22px; font-weight: 800; font-size: 1.05rem; cursor: pointer;
+}
+.vidchip {
+  position: absolute; left: 6px; top: 6px;
+  font-family: var(--font-data); font-size: .66rem; font-weight: 600; letter-spacing: .05em;
+  background: rgba(11,17,27,.82); color: var(--fg); padding: 2px 6px; border-radius: 5px;
+}
+.vidchip::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--live); margin-right: 5px; vertical-align: 1px; }
+.hint { color: var(--muted); font-size: .88rem; margin: -6px 0 12px; }
 .note { margin: 0; color: var(--muted); font-size: .9rem; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .note button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; cursor: pointer; color: var(--fg); }
 .vnav { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; }
@@ -247,6 +260,7 @@ footer p { margin: 0 0 6px; max-width: 70ch; }
       <video id="vVid" muted playsinline autoplay hidden></video>
       <span class="badge" id="vBadge">PHOTO</span>
       <span class="age vage" id="vAge"></span>
+      <button class="tapplay" id="vTap" hidden>&#9654; Play live video</button>
     </div>
     <p class="note" id="vNote"></p>
     <div class="vnav">
@@ -340,7 +354,8 @@ function renderStrips() {
   for (const r of routes) {
     const sec = document.createElement('section');
     sec.className = 'group';
-    sec.innerHTML = `<h2><span class="shield s${r}">${r}</span><span>${ROUTES[r].title}</span><span class="count">${byRoute[r].length} cameras, ${ROUTES[r].order}</span></h2>`;
+    sec.innerHTML = `<h2><span class="shield s${r}">${r}</span><span>${ROUTES[r].title}</span><span class="count">${byRoute[r].length} cameras, ${ROUTES[r].order}</span></h2>
+      <p class="hint">These are photos that update every few minutes. Tap one to watch live video.</p>`;
     const list = document.createElement('div');
     list.className = 'tiles';
     byRoute[r].forEach((c, i) => {
@@ -348,7 +363,7 @@ function renderStrips() {
       b.className = 'tile';
       b.dataset.id = c.id;
       b.setAttribute('aria-label', `${r}: ${c.label}, ${c.place}`);
-      b.innerHTML = `<div class="ph"><img alt="" loading="lazy" decoding="async"><span class="age" hidden></span></div>
+      b.innerHTML = `<div class="ph"><img alt="" loading="lazy" decoding="async">${c.video ? '<span class="vidchip">LIVE</span>' : ''}<span class="age" hidden></span></div>
         <div class="cap"><span class="num">${i + 1}</span><span class="lbl">${escapeHtml(c.label)}<span class="place">${escapeHtml(c.place)}</span></span></div>`;
       const img = b.querySelector('img');
       img.addEventListener('error', () => {
@@ -521,10 +536,39 @@ function closeViewer() {
   if (state.opener && document.contains(state.opener)) state.opener.focus();
 }
 
+// Caltrans' video server refuses about half of all requests at random (HTTP 403).
+// Its refusals carry no CORS header, so the browser reports them as status 0.
+// hls.js gives up on both by default; retry them like any network hiccup.
+const MAX_TRIES = 8;
+const RETRY_GAPS = [600, 1000, 1500, 2000, 2500, 3000, 3000];
+function loadPolicy(retries, delayMs, firstByteMs, loadMs) {
+  return {
+    default: {
+      maxTimeToFirstByteMs: firstByteMs,
+      maxLoadTimeMs: loadMs,
+      timeoutRetry: { maxNumRetry: retries, retryDelayMs: 0, maxRetryDelayMs: 0 },
+      errorRetry: {
+        maxNumRetry: retries,
+        retryDelayMs: delayMs,
+        maxRetryDelayMs: delayMs * 4,
+        backoff: 'linear',
+        shouldRetry: (cfg, count, isTimeout, resp, retry) =>
+          retry || (count < cfg.maxNumRetry && (!resp || !resp.code || (resp.code >= 400 && resp.code < 500))),
+      },
+    },
+  };
+}
+
+// A fresh query string per attempt so the browser never reuses a cached refusal.
+function freshUrl(u) {
+  return u + (u.includes('?') ? '&' : '?') + 'n=' + Date.now().toString(36);
+}
+
 function stopLive() {
   clearTimeout(liveTimer);
   vVid.onplaying = null;
   vVid.onerror = null;
+  $('vTap').hidden = true;
   if (hls) { hls.destroy(); hls = null; }
   try { vVid.pause(); } catch (e) {}
   vVid.removeAttribute('src');
@@ -533,9 +577,10 @@ function stopLive() {
 }
 function setMode(mode, message, canRetry) {
   vBadge.className = 'badge' + (mode === 'live' ? ' live' : '');
-  vBadge.textContent = mode === 'live' ? 'LIVE' : mode === 'connecting' ? 'CONNECTING…' : 'PHOTO';
+  vBadge.textContent = mode === 'live' ? 'LIVE' : mode === 'connecting' ? 'CONNECTING…' : mode === 'tap' ? 'READY' : 'PHOTO';
   vVid.hidden = mode !== 'live';
   vImg.hidden = mode === 'live';
+  $('vTap').hidden = mode !== 'tap';
   vNote.innerHTML = '';
   if (message) {
     const s = document.createElement('span');
@@ -556,37 +601,67 @@ function startLive(c) {
     setMode('photo', "This camera has no live video. You're seeing its latest photo.");
     return;
   }
-  setMode('connecting', 'Connecting to live video…');
   const id = c.id;
+  setMode('connecting', liveTries === 0
+    ? 'Connecting to live video…'
+    : `Caltrans' video server is busy. Trying again (${liveTries + 1} of ${MAX_TRIES})…`);
   const fail = () => {
     if (state.open !== id) return;
     stopLive();
-    if (liveTries < 2) {
+    if (liveTries < MAX_TRIES - 1) {
+      const gap = RETRY_GAPS[Math.min(liveTries, RETRY_GAPS.length - 1)];
       liveTries++;
-      setMode('connecting', 'Connecting to live video…');
-      liveTimer = setTimeout(() => { if (state.open === id) startLive(c); }, 1500);
+      setMode('connecting', `Caltrans' video server is busy. Trying again (${liveTries + 1} of ${MAX_TRIES})…`);
+      liveTimer = setTimeout(() => { if (state.open === id) startLive(c); }, gap);
       return;
     }
-    setMode('photo', "Live video isn't available right now. You're seeing the latest photo.", true);
+    setMode('photo', "Caltrans' video server isn't answering right now. You're seeing the latest photo.", true);
   };
-  vVid.onplaying = () => { if (state.open === id) { clearTimeout(liveTimer); setMode('live', 'Live from Caltrans.'); } };
+  // Phones in Low Power Mode (and some in-app browsers) block autoplay: ask for a tap instead of failing.
+  const play = () => {
+    vVid.play().catch((err) => {
+      if (state.open !== id || !err || err.name !== 'NotAllowedError') return;
+      clearTimeout(liveTimer);
+      setMode('tap', 'Your phone paused the video. Tap play to start it.');
+    });
+  };
+  vVid.onplaying = () => {
+    if (state.open !== id) return;
+    clearTimeout(liveTimer);
+    liveTries = 0;
+    setMode('live', 'Live from Caltrans.');
+  };
   vVid.onerror = fail;
-  liveTimer = setTimeout(fail, 12000);
-  if (vVid.canPlayType('application/vnd.apple.mpegurl')) {
-    vVid.src = c.video;
-    vVid.play().catch(() => {});
-  } else if (window.Hls && Hls.isSupported()) {
-    hls = new Hls({ liveSyncDurationCount: 3, manifestLoadingMaxRetry: 0, levelLoadingMaxRetry: 1 });
-    hls.on(Hls.Events.ERROR, (_e, d) => { if (d.fatal) fail(); });
-    hls.loadSource(c.video);
+  liveTimer = setTimeout(fail, 20000);
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls({
+      liveSyncDurationCount: 3,
+      manifestLoadPolicy: loadPolicy(6, 800, 8000, 15000),
+      playlistLoadPolicy: loadPolicy(8, 600, 8000, 15000),
+      fragLoadPolicy: loadPolicy(8, 400, 10000, 30000),
+    });
+    hls.on(Hls.Events.ERROR, (_e, d) => {
+      if (!d.fatal) return;
+      if (d.type === Hls.ErrorTypes.MEDIA_ERROR) { hls.recoverMediaError(); return; }
+      fail();
+    });
+    hls.loadSource(freshUrl(c.video));
     hls.attachMedia(vVid);
-    vVid.play().catch(() => {});
+    play();
+  } else if (vVid.canPlayType('application/vnd.apple.mpegurl')) {
+    vVid.src = freshUrl(c.video);
+    play();
   } else {
     clearTimeout(liveTimer);
     setMode('photo', "This browser can't play the live video. You're seeing the latest photo.");
   }
 }
 
+$('vTap').addEventListener('click', () => {
+  if (!state.open) return;
+  liveTries = 0;
+  startLive(byId.get(state.open));
+});
 $('vClose').addEventListener('click', closeViewer);
 $('viewer').addEventListener('click', (e) => { if (e.target.id === 'viewer') closeViewer(); });
 document.addEventListener('keydown', (e) => {
