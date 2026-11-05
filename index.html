@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Corona Freeway Cams</title>
+<meta name="description" content="Caltrans cameras on the 91, 71 and 15 around Corona. Tap a dot to watch.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Overpass:wght@400;600;800&family=Overpass+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<style>
+/* Layout: night map on top, each freeway as a numbered strip of photos below, a viewer that slides over both */
+:root {
+  --bg: #0b111b;
+  --panel: #131b29;
+  --panel-2: #1a2436;
+  --line: #27334a;
+  --fg: #e9eef6;
+  --muted: #98a4ba;
+  --r91: #f2a33a;
+  --r71: #3dbb6e;
+  --r15: #5291f6;
+  --live: #ff4d4d;
+  --warn: #e7c14b;
+  --font-display: "Overpass", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "Overpass", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "Overpass Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+body.locked { overflow: hidden; }
+.wrap {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+
+header.top { padding-block: 22px 14px; display: grid; gap: 4px; }
+h1 {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: clamp(1.65rem, 5vw, 2.5rem);
+  line-height: 1.05;
+  letter-spacing: -0.015em;
+  margin: 0;
+  text-wrap: balance;
+}
+.sub { color: var(--muted); margin: 0; max-width: 60ch; }
+
+/* Route shields */
+.shield {
+  display: inline-grid;
+  place-items: center;
+  min-width: 2.1em;
+  height: 1.7em;
+  padding: 0 .4em;
+  border-radius: 6px;
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: .95em;
+  color: #0b111b;
+  line-height: 1;
+  padding-top: .12em;
+}
+.s91 { background: var(--r91); }
+.s71 { background: var(--r71); }
+.s15 { background: var(--r15); }
+
+/* Controls */
+.controls { display: grid; gap: 12px; padding-bottom: 14px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+.tab {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 999px; padding: 8px 14px 8px 8px;
+  cursor: pointer; font-weight: 600;
+}
+.tab .n { color: var(--muted); font-family: var(--font-data); font-size: .85em; font-weight: 500; }
+.tab[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.tab[aria-pressed="true"] .n { color: #3a4559; }
+.tab.all { padding-left: 14px; }
+.jump { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: .92em; }
+.jump button {
+  background: none; border: 1px dashed var(--line); border-radius: 8px;
+  padding: 6px 10px; cursor: pointer; color: var(--fg);
+}
+.jump button:hover { border-style: solid; }
+
+/* Map */
+.mapbox { position: relative; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: var(--panel); }
+#map { height: clamp(300px, 52vh, 560px); width: 100%; background: #0e1522; }
+.legend {
+  position: absolute; left: 10px; bottom: 10px; z-index: 500;
+  background: rgba(11,17,27,.86); border: 1px solid var(--line); border-radius: 10px;
+  padding: 6px 10px; font-size: .8em; color: var(--muted); display: flex; gap: 10px; align-items: center;
+}
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; vertical-align: -1px; }
+.nomap { display: grid; place-items: center; height: 120px; color: var(--muted); padding: 16px; text-align: center; }
+.leaflet-container { font-family: var(--font-body); }
+.leaflet-tooltip { background: var(--panel-2); color: var(--fg); border: 1px solid var(--line); box-shadow: none; font-weight: 600; }
+.leaflet-tooltip-top:before { border-top-color: var(--line); }
+.leaflet-control-attribution { background: rgba(11,17,27,.75) !important; color: var(--muted) !important; }
+.leaflet-control-attribution a { color: var(--fg) !important; }
+.leaflet-bar a { background: var(--panel-2) !important; color: var(--fg) !important; border-color: var(--line) !important; }
+
+/* Strips */
+main { padding-block: 22px 40px; display: grid; gap: 32px; }
+.group h2 {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  font-family: var(--font-display); font-weight: 800; font-size: 1.3rem; margin: 0 0 12px;
+}
+.group h2 .count { font-family: var(--font-body); font-weight: 400; font-size: .8rem; color: var(--muted); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+.tile {
+  display: grid; gap: 6px; text-align: left; padding: 0; background: none; border: 0; cursor: pointer; min-width: 0;
+}
+.ph {
+  position: relative; aspect-ratio: 4 / 3; max-width: 100%;
+  background: var(--panel); border-radius: 10px; overflow: hidden; border: 1px solid var(--line);
+}
+.ph img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.tile:hover .ph { border-color: var(--muted); }
+.age {
+  position: absolute; right: 6px; bottom: 6px;
+  font-family: var(--font-data); font-size: .7rem; font-weight: 600;
+  background: rgba(11,17,27,.82); color: var(--fg); padding: 2px 6px; border-radius: 5px;
+}
+.age.stale { color: var(--warn); }
+.cap { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.cap .num { font-family: var(--font-data); color: var(--muted); font-size: .8rem; flex: none; }
+.cap .lbl { font-weight: 600; font-size: .92rem; line-height: 1.25; min-width: 0; overflow-wrap: anywhere; }
+.cap .place { display: block; color: var(--muted); font-weight: 400; font-size: .8rem; }
+.nopic { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: .8rem; }
+
+/* Viewer */
+.viewer {
+  position: fixed; inset: 0; z-index: 2000;
+  background: rgba(5,8,14,.78);
+  display: grid; place-items: center;
+  padding: max(12px, env(safe-area-inset-top, 0px)) max(12px, env(safe-area-inset-right, 0px)) max(12px, env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px));
+}
+.sheet {
+  width: min(880px, 100%); max-height: 100%; overflow: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+  display: grid; gap: 12px; padding: 14px;
+}
+.vhead { display: flex; align-items: flex-start; gap: 12px; }
+.vhead .shield { font-size: 1.15rem; margin-top: 2px; }
+.vt { flex: 1; min-width: 0; }
+.vt h3 { margin: 0; font-family: var(--font-display); font-weight: 800; font-size: 1.25rem; line-height: 1.15; text-wrap: balance; }
+.vt p { margin: 2px 0 0; color: var(--muted); font-size: .9rem; }
+.iconbtn {
+  flex: none; width: 40px; height: 40px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line); cursor: pointer; font-size: 1.1rem;
+}
+.screen { position: relative; aspect-ratio: 4 / 3; max-width: 100%; background: #000; border-radius: 10px; overflow: hidden; }
+.screen img, .screen video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.badge {
+  position: absolute; left: 10px; top: 10px; z-index: 2;
+  font-family: var(--font-data); font-weight: 600; font-size: .75rem; letter-spacing: .06em;
+  padding: 3px 8px; border-radius: 6px; background: rgba(11,17,27,.85); color: var(--fg);
+}
+.badge.live { background: var(--live); color: #fff; }
+.badge.live::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #fff; margin-right: 6px; vertical-align: 1px; animation: pulse 1.4s infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+.vage { position: absolute; right: 10px; bottom: 10px; z-index: 2; }
+.note { margin: 0; color: var(--muted); font-size: .9rem; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.note button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 10px; cursor: pointer; color: var(--fg); }
+.vnav { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; }
+.vnav button {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; cursor: pointer; font-weight: 600;
+}
+.vnav button:disabled { opacity: .35; cursor: default; }
+#vPrev { justify-self: start; }
+#vNext { justify-self: end; }
+#vPos { font-family: var(--font-data); color: var(--muted); font-size: .85rem; text-align: center; }
+
+footer { color: var(--muted); font-size: .85rem; padding-block: 0 32px; }
+footer p { margin: 0 0 6px; max-width: 70ch; }
+
+@media (max-width: 520px) {
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .viewer { place-items: end center; padding-bottom: 0; }
+  .sheet { border-radius: 16px 16px 0 0; padding-bottom: max(14px, env(safe-area-inset-bottom, 0px)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .badge.live::before { animation: none; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Corona Freeway Cams</h1>
+    <p class="sub">Caltrans cameras on the 91, 71 and 15. Tap any dot or photo to watch it.</p>
+  </header>
+
+  <div class="controls">
+    <div class="tabs" role="group" aria-label="Pick a freeway">
+      <button class="tab all" data-route="all" aria-pressed="true">All <span class="n" id="nAll"></span></button>
+      <button class="tab" data-route="91" aria-pressed="false"><span class="shield s91">91</span> <span class="n" id="n91"></span></button>
+      <button class="tab" data-route="71" aria-pressed="false"><span class="shield s71">71</span> <span class="n" id="n71"></span></button>
+      <button class="tab" data-route="15" aria-pressed="false"><span class="shield s15">15</span> <span class="n" id="n15"></span></button>
+    </div>
+    <div class="jump" id="jump"><span>Jump to:</span></div>
+  </div>
+
+  <div class="mapbox">
+    <div id="map" role="region" aria-label="Map of cameras"></div>
+    <div class="legend" aria-hidden="true"><span><i style="background:var(--r91)"></i>91</span><span><i style="background:var(--r71)"></i>71</span><span><i style="background:var(--r15)"></i>15</span></div>
+  </div>
+</div>
+
+<main class="wrap" id="strips"></main>
+
+<footer class="wrap">
+  <p>Photos come from Caltrans and update about every 3 minutes. Live video plays when Caltrans' video server allows it. If it says unavailable, try again in a moment.</p>
+  <p>Camera data: Caltrans (cwwp2.dot.ca.gov). Map: OpenStreetMap contributors, CARTO.</p>
+</footer>
+
+<div class="viewer" id="viewer" hidden role="dialog" aria-modal="true" aria-labelledby="vTitle">
+  <div class="sheet">
+    <div class="vhead">
+      <span class="shield" id="vShield"></span>
+      <div class="vt"><h3 id="vTitle"></h3><p id="vMeta"></p></div>
+      <button class="iconbtn" id="vClose" aria-label="Close">&#x2715;</button>
+    </div>
+    <div class="screen">
+      <img id="vImg" alt="">
+      <video id="vVid" muted playsinline autoplay hidden></video>
+      <span class="badge" id="vBadge">PHOTO</span>
+      <span class="age vage" id="vAge"></span>
+    </div>
+    <p class="note" id="vNote"></p>
+    <div class="vnav">
+      <button id="vPrev"></button>
+      <span id="vPos"></span>
+      <button id="vNext"></button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.6.19/dist/hls.min.js"></script>
+<script>
+const CAMS = [{"id":"91-308","route":"91","label":"241 south to 91 east ramp","place":"Anaheim","dir":"north","lat":33.8639,"lon":-117.71785,"img":"https://cwwp2.dot.ca.gov/data/d12/cctv/image/sr241sb308sr91eb/sr241sb308sr91eb.jpg","video":"https://wzmedia.dot.ca.gov/D12/SB241ToEBSR91.stream/playlist.m3u8"},{"id":"91-307","route":"91","label":"241 north to 91 east ramp","place":"Yorba Linda","dir":"north","lat":33.86257,"lon":-117.71531,"img":"https://cwwp2.dot.ca.gov/data/d12/cctv/image/sr241nb307ebsr91241connector/sr241nb307ebsr91241connector.jpg","video":"https://wzmedia.dot.ca.gov/D12/NB241ToEB91.stream/playlist.m3u8"},{"id":"91-910","route":"91","label":"Coal Canyon, at the 241","place":"Yorba Linda","dir":"west","lat":33.87329,"lon":-117.6904,"img":"https://cwwp2.dot.ca.gov/data/d12/cctv/image/sr91910wbsr91atsr241coalcanyon/sr91910wbsr91atsr241coalcanyon.jpg","video":"https://wzmedia.dot.ca.gov/D12/WB91COALCANYON.stream/playlist.m3u8"},{"id":"91-43","route":"91","label":"0.1 mi east of county line","place":"Corona","dir":"east","lat":33.87043,"lon":-117.66848,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr914301mileseastofcountyline/sr914301mileseastofcountyline.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_43.stream/playlist.m3u8"},{"id":"91-44","route":"91","label":"0.7 mi west of Green River","place":"Corona","dir":"north","lat":33.87338,"lon":-117.66328,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr914407mileswestofgreenriver/sr914407mileswestofgreenriver.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_44.stream/playlist.m3u8"},{"id":"91-45","route":"91","label":"Green River","place":"Corona","dir":"south","lat":33.87867,"lon":-117.65865,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr9145greenriver/sr9145greenriver.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_45.stream/playlist.m3u8"},{"id":"91-46","route":"91","label":"0.5 mi east of Green River","place":"Corona","dir":"north","lat":33.88113,"lon":-117.64902,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr914605mileseastofgreenriver/sr914605mileseastofgreenriver.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_46.stream/playlist.m3u8"},{"id":"91-47","route":"91","label":"At the 71","place":"Corona","dir":"north","lat":33.88364,"lon":-117.63859,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr9147sr71/sr9147sr71.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_47.stream/playlist.m3u8"},{"id":"91-48","route":"91","label":"0.6 mi east of the 71","place":"Corona","dir":"east","lat":33.88384,"lon":-117.62949,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr914806mileseastofsr71/sr914806mileseastofsr71.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_48.stream/playlist.m3u8"},{"id":"91-49","route":"91","label":"0.5 mi west of Serfas","place":"Corona","dir":"north","lat":33.8823,"lon":-117.62478,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr914905mileswestofserfas/sr914905mileswestofserfas.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_49.stream/playlist.m3u8"},{"id":"91-50","route":"91","label":"East of Serfas Club","place":"Corona","dir":"south","lat":33.88099,"lon":-117.61196,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr9150eastofserfasclub/sr9150eastofserfasclub.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_50.stream/playlist.m3u8"},{"id":"91-51","route":"91","label":"Maple Street","place":"Corona","dir":"north","lat":33.87966,"lon":-117.60312,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr9151maplestreet/sr9151maplestreet.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_51.stream/playlist.m3u8"},{"id":"91-52","route":"91","label":"0.1 mi west of Smith","place":"Corona","dir":"south","lat":33.88183,"lon":-117.59536,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr915201mileswestofsmith/sr915201mileswestofsmith.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_52.stream/playlist.m3u8"},{"id":"91-53","route":"91","label":"0.3 mi east of Smith","place":"Corona","dir":"north","lat":33.88205,"lon":-117.58898,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr915303mileseastofsmith/sr915303mileseastofsmith.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_53.stream/playlist.m3u8"},{"id":"91-54","route":"91","label":"Lincoln on-ramp","place":"Corona","dir":"south","lat":33.88238,"lon":-117.58373,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr9154lincolnonramp/sr9154lincolnonramp.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_54.stream/playlist.m3u8"},{"id":"91-55","route":"91","label":"2nd Street on-ramp","place":"Corona","dir":"north","lat":33.88116,"lon":-117.58065,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr91552ndstreetonramp/sr91552ndstreetonramp.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_55.stream/playlist.m3u8"},{"id":"91-32","route":"91","label":"0.3 mi east of Main Street","place":"Corona","dir":"north","lat":33.87898,"lon":-117.5595,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr913203mileseastofmainstreet/sr913203mileseastofmainstreet.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_32.stream/playlist.m3u8"},{"id":"91-56","route":"91","label":"Promenade Overcross","place":"Corona","dir":"north","lat":33.88305,"lon":-117.53719,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr9156promenadeovercross/sr9156promenadeovercross.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_56.stream/playlist.m3u8"},{"id":"91-57","route":"91","label":"McKinley off-ramp","place":"Corona","dir":"north","lat":33.8843,"lon":-117.52242,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr9157mckinleyofframp/sr9157mckinleyofframp.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_57.stream/playlist.m3u8"},{"id":"91-58","route":"91","label":"West of Pierce","place":"Corona","dir":"south","lat":33.89349,"lon":-117.5033,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr9158westofpierce/sr9158westofpierce.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_58.stream/playlist.m3u8"},{"id":"91-41","route":"91","label":"Magnolia on-ramp","place":"Riverside","dir":"south","lat":33.89751,"lon":-117.48917,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr9141magnoliaonramp/sr9141magnoliaonramp.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_91_41.stream/playlist.m3u8"},{"id":"15-344","route":"15","label":"0.9 mi south of Temescal Canyon Road","place":"Corona","dir":"south","lat":33.76667,"lon":-117.47772,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1534409milessouthoftemescalcanyonroad/i1534409milessouthoftemescalcanyonroad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_344.stream/playlist.m3u8"},{"id":"15-345","route":"15","label":"South of Temescal Canyon Road","place":"Corona","dir":"south","lat":33.77463,"lon":-117.48636,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i15345southoftemescalcanyonroad/i15345southoftemescalcanyonroad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_345.stream/playlist.m3u8"},{"id":"15-346","route":"15","label":"North of Temescal Canyon Road","place":"Corona","dir":"north","lat":33.77913,"lon":-117.48834,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i15346northoftemescalcanyonroad/i15346northoftemescalcanyonroad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_346.stream/playlist.m3u8"},{"id":"15-347","route":"15","label":"1.2 mi south of Werick Road","place":"Corona","dir":"south","lat":33.79226,"lon":-117.49846,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1534712milessouthofwerickroad/i1534712milessouthofwerickroad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_347.stream/playlist.m3u8"},{"id":"15-348","route":"15","label":"South of Werick Road","place":"Corona","dir":"south","lat":33.80604,"lon":-117.5073,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i15348southofwerickroad/i15348southofwerickroad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_348.stream/playlist.m3u8"},{"id":"15-349","route":"15","label":"North of Werick Road","place":"Corona","dir":"north","lat":33.81019,"lon":-117.50866,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i15349northofwerickroad/i15349northofwerickroad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_349.stream/playlist.m3u8"},{"id":"15-350","route":"15","label":"0.6 mi north of Werick Road","place":"Corona","dir":"south","lat":33.81452,"lon":-117.51182,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1535006milesnorthofwerickroad/i1535006milesnorthofwerickroad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_350.stream/playlist.m3u8"},{"id":"15-351","route":"15","label":"Cajalco Road","place":"Corona","dir":"south","lat":33.82247,"lon":-117.52048,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i15351cajalcoroad/i15351cajalcoroad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_351.stream/playlist.m3u8"},{"id":"15-35","route":"15","label":"El Cerrito Road","place":"Corona","dir":"north","lat":33.83192,"lon":-117.52937,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1535elcerritoroad/i1535elcerritoroad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_35.stream/playlist.m3u8"},{"id":"15-36","route":"15","label":"Ontario Avenue","place":"Corona","dir":"north","lat":33.84392,"lon":-117.53462,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1536ontarioavenue/i1536ontarioavenue.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_36.stream/playlist.m3u8"},{"id":"15-37","route":"15","label":"Old Temescal Road","place":"Corona","dir":"north","lat":33.85413,"lon":-117.53509,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1537oldtemescalroad/i1537oldtemescalroad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_37.stream/playlist.m3u8"},{"id":"15-38","route":"15","label":"Magnolia Avenue","place":"Corona","dir":"north","lat":33.86593,"lon":-117.54168,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1538magnoliaavenue/i1538magnoliaavenue.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_38.stream/playlist.m3u8"},{"id":"15-39","route":"15","label":"91 interchange, southwest side","place":"Corona","dir":"south","lat":33.88038,"lon":-117.54732,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1539sr91connectorswquad/i1539sr91connectorswquad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_39.stream/playlist.m3u8"},{"id":"15-40","route":"15","label":"91 interchange, northeast side","place":"Corona","dir":"north","lat":33.88373,"lon":-117.54725,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1540sr91connectornequad/i1540sr91connectornequad.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_40.stream/playlist.m3u8"},{"id":"15-70","route":"15","label":"Hidden Valley Parkway","place":"Corona","dir":"south","lat":33.89222,"lon":-117.55639,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1570hiddenvalleyparkway/i1570hiddenvalleyparkway.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_70.stream/playlist.m3u8"},{"id":"15-71","route":"15","label":"South of 2nd","place":"Norco","dir":"south","lat":33.90445,"lon":-117.56035,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1571sof2nd/i1571sof2nd.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_71.stream/playlist.m3u8"},{"id":"15-72","route":"15","label":"North of 2nd Street","place":"Norco","dir":"north","lat":33.92108,"lon":-117.5564,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/i1572nof2ndstreet/i1572nof2ndstreet.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_15_72.stream/playlist.m3u8"},{"id":"71-418","route":"71","label":"0.5 mi north of the 91","place":"Corona","dir":"south","lat":33.88934,"lon":-117.64646,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr7141805minosr91/sr7141805minosr91.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_418.stream/playlist.m3u8"},{"id":"71-417","route":"71","label":"1 mi north of the 91","place":"Corona","dir":"south","lat":33.89726,"lon":-117.64679,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr714171minosr91/sr714171minosr91.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_417.stream/playlist.m3u8"},{"id":"71-416","route":"71","label":"1.7 mi south of Euclid","place":"Corona","dir":"south","lat":33.90756,"lon":-117.64917,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr7141617misoeuclid/sr7141617misoeuclid.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_416.stream/playlist.m3u8"},{"id":"71-415","route":"71","label":"1 mi south of Euclid","place":"Corona","dir":"north","lat":33.91671,"lon":-117.65192,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr714151misoeuclid/sr714151misoeuclid.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_415.stream/playlist.m3u8"},{"id":"71-401","route":"71","label":"At Euclid Ave","place":"Corona","dir":"north","lat":33.93083,"lon":-117.65875,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr71401ateuclidave/sr71401ateuclidave.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_401.stream/playlist.m3u8"},{"id":"71-402","route":"71","label":"0.5 mi north of Euclid","place":"Chino Hills","dir":"south","lat":33.93091,"lon":-117.6585,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr7140205minoeuclid/sr7140205minoeuclid.jpg","video":null},{"id":"71-403","route":"71","label":"Pine on-ramp","place":"Chino Hills","dir":"south","lat":33.94479,"lon":-117.67283,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr71403pineonramp/sr71403pineonramp.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_403.stream/playlist.m3u8"},{"id":"71-404","route":"71","label":"0.5 mi north of Pine Ave","place":"Chino Hills","dir":"north","lat":33.95496,"lon":-117.67924,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr7140405minopineave/sr7140405minopineave.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_404.stream/playlist.m3u8"},{"id":"71-405","route":"71","label":"Central off-ramp","place":"Chino Hills","dir":"north","lat":33.96502,"lon":-117.68672,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr71405centralofframp/sr71405centralofframp.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_405.stream/playlist.m3u8"},{"id":"71-406","route":"71","label":"Central Ave on-ramp","place":"Chino","dir":"","lat":33.9708,"lon":-117.69199,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr71406centralaveonramp/sr71406centralaveonramp.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_406.stream/playlist.m3u8"},{"id":"71-407","route":"71","label":"0.5 mi north of Central Ave","place":"Chino Hills","dir":"south","lat":33.97411,"lon":-117.6961,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr7140705minocentralave/sr7140705minocentralave.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_407.stream/playlist.m3u8"},{"id":"71-408","route":"71","label":"Ramona off-ramp","place":"Chino Hills","dir":"north","lat":33.97881,"lon":-117.70233,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr71408ramonaofframp/sr71408ramonaofframp.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_408.stream/playlist.m3u8"},{"id":"71-409","route":"71","label":"Chino Hills Parkway","place":"Chino Hills","dir":"north","lat":33.98512,"lon":-117.71089,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr71409chinohillsparkwayt/sr71409chinohillsparkwayt.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_409.stream/playlist.m3u8"},{"id":"71-410","route":"71","label":"0.6 mi south of Grand Ave","place":"Chino Hills","dir":"south","lat":33.99322,"lon":-117.71954,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr7141006misograndave/sr7141006misograndave.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_410.stream/playlist.m3u8"},{"id":"71-411","route":"71","label":"Grand Ave (Loop)","place":"Chino","dir":"north","lat":33.99966,"lon":-117.72271,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr71411grandaveloop/sr71411grandaveloop.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_411.stream/playlist.m3u8"},{"id":"71-412","route":"71","label":"South of Chino Ave","place":"Chino","dir":"north","lat":34.00834,"lon":-117.73006,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr71412sochinoave/sr71412sochinoave.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_412.stream/playlist.m3u8"},{"id":"71-413","route":"71","label":"0.4 mi south of Peyton Drive","place":"Chino Hills","dir":"south","lat":34.01478,"lon":-117.73887,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr7141304misopeytondrive/sr7141304misopeytondrive.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_413.stream/playlist.m3u8"},{"id":"71-414","route":"71","label":"Peyton Drive","place":"Chino Hills","dir":"north","lat":34.01891,"lon":-117.74381,"img":"https://cwwp2.dot.ca.gov/data/d8/cctv/image/sr71414peytondrive/sr71414peytondrive.jpg","video":"https://wzmedia.dot.ca.gov/D8/LB-8_71_414.stream/playlist.m3u8"}];
+
+const ROUTES = {
+  '91': { hex: '#f2a33a', title: 'Riverside Freeway', order: 'west to east', back: 'West', fwd: 'East' },
+  '71': { hex: '#3dbb6e', title: 'Corona Expressway', order: 'south to north', back: 'South', fwd: 'North' },
+  '15': { hex: '#5291f6', title: 'Interstate 15', order: 'south to north', back: 'South', fwd: 'North' },
+};
+const SPOTS = [
+  ['91 at the 71', '91-47'],
+  ['91 at the 15', '15-39'],
+  ['County line', '91-43'],
+  ['71 at Euclid', '71-401'],
+];
+
+const byId = new Map(CAMS.map(c => [c.id, c]));
+const byRoute = { '91': [], '71': [], '15': [] };
+for (const c of CAMS) byRoute[c.route].push(c);
+
+const state = { route: 'all', open: null, opener: null };
+const stills = new Map();      // id -> { src, obj, modified, failed }
+const visible = new Set();
+const tileEls = new Map();     // id -> tile element
+
+const $ = (id) => document.getElementById(id);
+
+/* ---------- Photos ---------- */
+async function loadStill(c) {
+  const url = c.img + '?t=' + Math.floor(Date.now() / 30000);
+  let st;
+  try {
+    const r = await fetch(url, { cache: 'no-store', mode: 'cors' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const lm = r.headers.get('Last-Modified');
+    const blob = await r.blob();
+    const obj = URL.createObjectURL(blob);
+    st = { src: obj, obj, modified: lm ? Date.parse(lm) : null, failed: false };
+  } catch (e) {
+    st = { src: url, obj: null, modified: null, failed: false };
+  }
+  const prev = stills.get(c.id);
+  if (prev && prev.obj) setTimeout(() => URL.revokeObjectURL(prev.obj), 10000);
+  stills.set(c.id, st);
+  paintTile(c.id);
+  if (state.open === c.id) paintViewerStill();
+  return st;
+}
+
+function ageText(ms) {
+  if (!ms) return '';
+  const m = Math.round((Date.now() - ms) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return m + ' min ago';
+  return Math.floor(m / 60) + ' hr ago';
+}
+function setAge(el, ms) {
+  el.textContent = ageText(ms);
+  el.classList.toggle('stale', !!ms && Date.now() - ms > 15 * 60000);
+  el.hidden = !ms;
+}
+
+function paintTile(id) {
+  const t = tileEls.get(id);
+  const st = stills.get(id);
+  if (!t || !st) return;
+  const img = t.querySelector('img');
+  if (img.getAttribute('src') !== st.src) img.src = st.src;
+  setAge(t.querySelector('.age'), st.modified);
+}
+
+/* ---------- Strips ---------- */
+function renderStrips() {
+  const main = $('strips');
+  main.innerHTML = '';
+  tileEls.clear();
+  io.disconnect();
+  visible.clear();
+  const routes = state.route === 'all' ? ['91', '71', '15'] : [state.route];
+  for (const r of routes) {
+    const sec = document.createElement('section');
+    sec.className = 'group';
+    sec.innerHTML = `<h2><span class="shield s${r}">${r}</span><span>${ROUTES[r].title}</span><span class="count">${byRoute[r].length} cameras, ${ROUTES[r].order}</span></h2>`;
+    const list = document.createElement('div');
+    list.className = 'tiles';
+    byRoute[r].forEach((c, i) => {
+      const b = document.createElement('button');
+      b.className = 'tile';
+      b.dataset.id = c.id;
+      b.setAttribute('aria-label', `${r}: ${c.label}, ${c.place}`);
+      b.innerHTML = `<div class="ph"><img alt="" loading="lazy" decoding="async"><span class="age" hidden></span></div>
+        <div class="cap"><span class="num">${i + 1}</span><span class="lbl">${escapeHtml(c.label)}<span class="place">${escapeHtml(c.place)}</span></span></div>`;
+      const img = b.querySelector('img');
+      img.addEventListener('error', () => {
+        if (!b.querySelector('.nopic')) {
+          const n = document.createElement('span');
+          n.className = 'nopic';
+          n.textContent = 'No picture right now';
+          b.querySelector('.ph').appendChild(n);
+        }
+      });
+      img.addEventListener('load', () => b.querySelector('.nopic')?.remove());
+      b.addEventListener('click', () => openViewer(c.id, b));
+      list.appendChild(b);
+      tileEls.set(c.id, b);
+      io.observe(b);
+      if (stills.has(c.id)) paintTile(c.id);
+    });
+    sec.appendChild(list);
+    main.appendChild(sec);
+  }
+}
+
+const io = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    const id = e.target.dataset.id;
+    if (e.isIntersecting) {
+      visible.add(id);
+      const st = stills.get(id);
+      if (!st || Date.now() - (st.loadedAt || 0) > 60000) {
+        const c = byId.get(id);
+        loadStill(c).then(s => { s.loadedAt = Date.now(); });
+      }
+    } else {
+      visible.delete(id);
+    }
+  }
+}, { rootMargin: '200px 0px' });
+
+setInterval(() => {
+  for (const id of visible) loadStill(byId.get(id)).then(s => { s.loadedAt = Date.now(); });
+}, 60000);
+setInterval(() => {
+  for (const id of tileEls.keys()) {
+    const st = stills.get(id);
+    if (st) setAge(tileEls.get(id).querySelector('.age'), st.modified);
+  }
+  if (state.open) paintViewerAge();
+}, 20000);
+
+/* ---------- Map ---------- */
+let map = null;
+const markers = new Map();
+function initMap() {
+  const el = $('map');
+  if (!window.L) {
+    el.className = 'nomap';
+    el.style.height = 'auto';
+    el.textContent = "The map couldn't load. The camera photos below still work.";
+    return;
+  }
+  map = L.map(el, { scrollWheelZoom: false, zoomSnap: 0.5 });
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd', maxZoom: 19,
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+  }).addTo(map);
+  for (const c of CAMS) {
+    const m = L.circleMarker([c.lat, c.lon], baseStyle(c));
+    m.bindTooltip(`${c.route} · ${c.label}`, { direction: 'top', offset: [0, -6] });
+    m.on('click', () => openViewer(c.id));
+    m.addTo(map);
+    markers.set(c.id, m);
+  }
+  map.on('click', () => map.scrollWheelZoom.enable());
+  map.on('mouseout', () => map.scrollWheelZoom.disable());
+  fitRoute();
+}
+function baseStyle(c) {
+  const on = state.route === 'all' || state.route === c.route;
+  const sel = state.open === c.id;
+  return {
+    radius: sel ? 11 : 7,
+    color: sel ? '#ffffff' : '#0b111b',
+    weight: sel ? 3 : 2,
+    fillColor: ROUTES[c.route].hex,
+    fillOpacity: on ? 1 : 0.18,
+    opacity: on ? 1 : 0.3,
+  };
+}
+function restyleMarkers() {
+  for (const [id, m] of markers) {
+    m.setStyle(baseStyle(byId.get(id)));
+    if (state.open === id) m.bringToFront();
+  }
+}
+function fitRoute() {
+  if (!map) return;
+  const list = state.route === 'all' ? CAMS : byRoute[state.route];
+  map.fitBounds(L.latLngBounds(list.map(c => [c.lat, c.lon])), { padding: [24, 24] });
+}
+
+/* ---------- Route tabs ---------- */
+function setRoute(r) {
+  state.route = r;
+  document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-pressed', String(t.dataset.route === r)));
+  restyleMarkers();
+  fitRoute();
+  renderStrips();
+}
+
+/* ---------- Viewer ---------- */
+let hls = null, liveTimer = null, liveTries = 0, stillTimer = null;
+const vImg = $('vImg'), vVid = $('vVid'), vBadge = $('vBadge'), vNote = $('vNote');
+
+function openViewer(id, opener) {
+  const c = byId.get(id);
+  if (!c) return;
+  const wasOpen = !!state.open;
+  state.open = id;
+  if (!wasOpen) state.opener = opener || document.activeElement;
+  const list = byRoute[c.route];
+  const i = list.indexOf(c);
+  $('vShield').className = 'shield s' + c.route;
+  $('vShield').textContent = c.route;
+  $('vTitle').textContent = c.label;
+  $('vMeta').textContent = [c.place, c.dir ? 'camera looking ' + c.dir : ''].filter(Boolean).join(' · ');
+  $('vPos').textContent = `${i + 1} of ${list.length}`;
+  const prev = $('vPrev'), next = $('vNext');
+  prev.textContent = '← ' + ROUTES[c.route].back;
+  next.textContent = ROUTES[c.route].fwd + ' →';
+  prev.disabled = i === 0;
+  next.disabled = i === list.length - 1;
+  prev.onclick = () => openViewer(list[i - 1].id);
+  next.onclick = () => openViewer(list[i + 1].id);
+
+  vImg.removeAttribute('src');
+  const st = stills.get(id);
+  if (st) paintViewerStill(); else $('vAge').hidden = true;
+  loadStill(c);
+  clearInterval(stillTimer);
+  stillTimer = setInterval(() => loadStill(c), 60000);
+
+  $('viewer').hidden = false;
+  document.body.classList.add('locked');
+  if (!wasOpen) $('vClose').focus();
+  restyleMarkers();
+  if (map) map.panTo([c.lat, c.lon], { animate: true });
+
+  liveTries = 0;
+  startLive(c);
+}
+function paintViewerStill() {
+  const st = stills.get(state.open);
+  if (!st) return;
+  if (vImg.getAttribute('src') !== st.src) vImg.src = st.src;
+  paintViewerAge();
+}
+function paintViewerAge() {
+  const st = stills.get(state.open);
+  const showing = !vVid.hidden;
+  if (showing || !st) { $('vAge').hidden = true; return; }
+  setAge($('vAge'), st.modified);
+}
+function closeViewer() {
+  stopLive();
+  clearInterval(stillTimer);
+  state.open = null;
+  $('viewer').hidden = true;
+  document.body.classList.remove('locked');
+  restyleMarkers();
+  if (state.opener && document.contains(state.opener)) state.opener.focus();
+}
+
+function stopLive() {
+  clearTimeout(liveTimer);
+  vVid.onplaying = null;
+  vVid.onerror = null;
+  if (hls) { hls.destroy(); hls = null; }
+  try { vVid.pause(); } catch (e) {}
+  vVid.removeAttribute('src');
+  vVid.load();
+  vVid.hidden = true;
+}
+function setMode(mode, message, canRetry) {
+  vBadge.className = 'badge' + (mode === 'live' ? ' live' : '');
+  vBadge.textContent = mode === 'live' ? 'LIVE' : mode === 'connecting' ? 'CONNECTING…' : 'PHOTO';
+  vVid.hidden = mode !== 'live';
+  vImg.hidden = mode === 'live';
+  vNote.innerHTML = '';
+  if (message) {
+    const s = document.createElement('span');
+    s.textContent = message;
+    vNote.appendChild(s);
+  }
+  if (canRetry) {
+    const b = document.createElement('button');
+    b.textContent = 'Try live video again';
+    b.onclick = () => { liveTries = 0; startLive(byId.get(state.open)); };
+    vNote.appendChild(b);
+  }
+  paintViewerAge();
+}
+function startLive(c) {
+  stopLive();
+  if (!c.video) {
+    setMode('photo', "This camera has no live video. You're seeing its latest photo.");
+    return;
+  }
+  setMode('connecting', 'Connecting to live video…');
+  const id = c.id;
+  const fail = () => {
+    if (state.open !== id) return;
+    stopLive();
+    if (liveTries < 2) {
+      liveTries++;
+      setMode('connecting', 'Connecting to live video…');
+      liveTimer = setTimeout(() => { if (state.open === id) startLive(c); }, 1500);
+      return;
+    }
+    setMode('photo', "Live video isn't available right now. You're seeing the latest photo.", true);
+  };
+  vVid.onplaying = () => { if (state.open === id) { clearTimeout(liveTimer); setMode('live', 'Live from Caltrans.'); } };
+  vVid.onerror = fail;
+  liveTimer = setTimeout(fail, 12000);
+  if (vVid.canPlayType('application/vnd.apple.mpegurl')) {
+    vVid.src = c.video;
+    vVid.play().catch(() => {});
+  } else if (window.Hls && Hls.isSupported()) {
+    hls = new Hls({ liveSyncDurationCount: 3, manifestLoadingMaxRetry: 0, levelLoadingMaxRetry: 1 });
+    hls.on(Hls.Events.ERROR, (_e, d) => { if (d.fatal) fail(); });
+    hls.loadSource(c.video);
+    hls.attachMedia(vVid);
+    vVid.play().catch(() => {});
+  } else {
+    clearTimeout(liveTimer);
+    setMode('photo', "This browser can't play the live video. You're seeing the latest photo.");
+  }
+}
+
+$('vClose').addEventListener('click', closeViewer);
+$('viewer').addEventListener('click', (e) => { if (e.target.id === 'viewer') closeViewer(); });
+document.addEventListener('keydown', (e) => {
+  if (!state.open) return;
+  if (e.key === 'Escape') closeViewer();
+  if (e.key === 'ArrowLeft' && !$('vPrev').disabled) $('vPrev').click();
+  if (e.key === 'ArrowRight' && !$('vNext').disabled) $('vNext').click();
+});
+
+/* ---------- Setup ---------- */
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+$('nAll').textContent = CAMS.length;
+for (const r of ['91', '71', '15']) $('n' + r).textContent = byRoute[r].length;
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setRoute(t.dataset.route)));
+for (const [label, id] of SPOTS) {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.addEventListener('click', () => openViewer(id, b));
+  $('jump').appendChild(b);
+}
+initMap();
+renderStrips();
+</script>
+</body>
+</html>
