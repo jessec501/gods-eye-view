@@ -274,6 +274,47 @@ export async function loadAustinSourcesFromOpenData() {
 }
 
 /**
+ * Parse CCTV_CALTRANS_ANCHORS ("lat,lon;lat,lon") into anchor points. Pairs that are
+ * not finite or fall outside California's bounding box are dropped.
+ *
+ * @param {string|undefined} raw - Env value.
+ * @returns {Array<{lat:number, lon:number}>} Anchors (empty → use the defaults).
+ */
+export function parseCaltransAnchors(raw) {
+  return String(raw ?? '')
+    .split(';')
+    .map((pair) => pair.split(',').map((n) => Number(n.trim())))
+    .filter(
+      ([lat, lon]) =>
+        Number.isFinite(lat) &&
+        Number.isFinite(lon) &&
+        lat >= 32 &&
+        lat <= 42.1 &&
+        lon >= -124.6 &&
+        lon <= -114,
+    )
+    .map(([lat, lon]) => ({ lat, lon }));
+}
+
+/**
+ * Feed fields for one Caltrans camera: live HLS when a stream URL passes the
+ * official-host and `.m3u8` pins, otherwise the still image.
+ *
+ * @param {string} imageUrl - Pinned still image URL.
+ * @param {string|null|undefined} rawStream - streamingVideoURL from the catalog.
+ * @returns {{feedType: string, url: string, snapshotUrl: string}} Feed fields.
+ */
+export function caltransFeed(imageUrl, rawStream) {
+  const stream = rawStream
+    ? pinnedCameraUrl(rawStream, 'https://wzmedia.dot.ca.gov/')
+    : null;
+  if (stream && /\.m3u8$/i.test(new URL(stream).pathname)) {
+    return { feedType: 'hls', url: stream, snapshotUrl: imageUrl };
+  }
+  return { feedType: 'image', url: imageUrl, snapshotUrl: imageUrl };
+}
+
+/**
  * Fetch Caltrans CCTV cameras for the configured districts (CCTV_CALTRANS_DISTRICTS,
  * comma-separated 1..12; empty string disables the pack). One official JSON feed per
  * district, identical schema statewide; keyless. Only inService cameras with finite
@@ -282,9 +323,17 @@ export async function loadAustinSourcesFromOpenData() {
  * catalog to the official host). Districts fetch in parallel and fail independently
  * (Promise.allSettled) — one district outage never darkens the others.
  *
+ * CCTV_CALTRANS_VIDEO=1 plays a camera's official live HLS stream (pinned to
+ * https://wzmedia.dot.ca.gov/, `.m3u8` only) and keeps its still as the snapshot;
+ * cameras without a stream stay stills. CCTV_CALTRANS_ANCHORS ("lat,lon;lat,lon")
+ * replaces the four default metro anchors, so a region outside them (e.g. Corona)
+ * sorts first instead of being trimmed by the per-pack and catalog-wide caps.
+ *
  * @returns {Promise<Array<object>>} Normalized camera source objects.
  */
 export async function loadCaltransSourcesFromOpenData() {
+  const useVideo = String(process.env.CCTV_CALTRANS_VIDEO ?? '0').trim() === '1';
+  const anchors = parseCaltransAnchors(process.env.CCTV_CALTRANS_ANCHORS);
   const districtsRaw =
     process.env.CCTV_CALTRANS_DISTRICTS ?? DEFAULT_CALTRANS_DISTRICTS;
   const districts = String(districtsRaw)
@@ -375,9 +424,10 @@ export async function loadCaltransSourcesFromOpenData() {
             ? Math.max(-100, Math.min(4000, ft * 0.3048))
             : 150;
         })(),
-        feedType: 'image',
-        url: imageUrl,
-        snapshotUrl: imageUrl,
+        ...caltransFeed(
+          imageUrl,
+          useVideo ? cctv.imageData?.streamingVideoURL : null,
+        ),
         sourceKind: 'caltrans-open-data',
         license: 'Public Caltrans highway camera frame',
       });
@@ -390,7 +440,11 @@ export async function loadCaltransSourcesFromOpenData() {
   const maxCount = Number.isFinite(maxRaw)
     ? Math.max(8, Math.min(600, Math.floor(maxRaw)))
     : DEFAULT_CALTRANS_MAX_SOURCES;
-  const prioritized = prioritizeSources(cameras, maxCount, CALTRANS_ANCHORS);
+  const prioritized = prioritizeSources(
+    cameras,
+    maxCount,
+    anchors.length ? anchors : CALTRANS_ANCHORS,
+  );
   console.log(
     `[CCTV] Loaded Caltrans camera sources: ${cameras.length} inService (using nearest ${prioritized.length})`,
   );
